@@ -1,5 +1,5 @@
 
-# [project name] contest details
+# Sentiment V2 contest details
 
 - Join [Sherlock Discord](https://discord.gg/MABEWyASkp)
 - Submit findings using the issue page in your private contest repo (label issues as med or high)
