@@ -1,0 +1,26 @@
+{
+    "extends": "solhint:recommended",
+    "plugins": [],
+    "rules": {
+        "no-empty-blocks": "off",
+        "gas-small-strings": "warn",
+        "constructor-syntax": "warn",
+        "gas-length-in-loops": "warn",
+        "gas-increment-by-one": "warn",
+        "interface-starts-with-i": "warn",
+        "modifier-name-mixedcase": "warn",
+        "gas-calldata-parameters": "warn",
+        "named-parameters-mapping": "warn",
+        "func-param-name-mixedcase": "warn",
+        "max-line-length": [
+            "warn",
+            125
+        ],
+        "func-visibility": [
+            "warn",
+            {
+                "ignoreConstructors": true
+            }
+        ]
+    }
+}
