@@ -21,11 +21,8 @@ ___
 Expected launch values for protocol params:
 Min LTV = 10% = 100000000000000000
 Max LTV = 98% = 980000000000000000
-Min Debt = 0.05 ETH = 50000000000000000
-Min Borrow = 0.05 ETH = 50000000000000000
 Liquidation Fee = 0 (Might be increased to 20-30% in the future)
 Liquidation Discount = 10% = 100000000000000000
-Default Interest Fee = 10% = 100000000000000000
 Default Origination Fee = 0
 Sequencer Grace Period = 1 hour = 3600
 Timelock Duration  = 24 hours (common across all contracts)
@@ -33,6 +30,9 @@ Timelock Deadline = 72 hours (common across all contracts)
 MAX_QUEUE_LENGTH = 10
 Max Position Assets = 5
 Max Position Debt Pools = 5
+Min Debt = from 0 to 0.05 ETH = from 0 to 50000000000000000
+Min Borrow = from 0 to 0.05 ETH = from 0 to 50000000000000000
+Default Interest Fee = from 0 to 10% = from 0 to 100000000000000000
 ___
 
 ### Q: Are there any limitations on values set by admins (or other roles) in protocols you integrate with, including restrictions on array lengths?
