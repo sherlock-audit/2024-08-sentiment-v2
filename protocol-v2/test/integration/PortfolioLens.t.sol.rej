@@ -1,0 +1,10 @@
+diff a/protocol-v2/test/integration/PortfolioLens.t.sol b/protocol-v2/test/integration/PortfolioLens.t.sol	(rejected hunks)
+@@ -64,7 +64,7 @@ contract PortfolioLensTest is BaseTest {
+         actions[6] = addToken(address(asset3));
+         positionManager.processBatch(position, actions);
+         vm.stopPrank();
+-        assertTrue(riskEngine.isPositionHealthy(position));
++        assertGe(riskEngine.getPositionHealthFactor(position), 1e18);
+         vm.stopPrank();
+ 
+         positions.push(position);

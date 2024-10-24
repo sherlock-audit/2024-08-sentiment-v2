@@ -1,0 +1,75 @@
+diff a/protocol-v2/test/core/RiskModule.t.sol b/protocol-v2/test/core/RiskModule.t.sol	(rejected hunks)
+@@ -6,8 +6,10 @@ import { MockERC20 } from "../mocks/MockERC20.sol";
+ import { Pool } from "src/Pool.sol";
+ import { Action } from "src/PositionManager.sol";
+ import { PositionManager } from "src/PositionManager.sol";
++
+ import { RiskEngine } from "src/RiskEngine.sol";
+ import { RiskModule } from "src/RiskModule.sol";
++import { PortfolioLens } from "src/lens/PortfolioLens.sol";
+ import { FixedPriceOracle } from "src/oracle/FixedPriceOracle.sol";
+ 
+ contract RiskModuleUnitTests is BaseTest {
+@@ -15,6 +17,7 @@ contract RiskModuleUnitTests is BaseTest {
+     address position;
+     RiskEngine riskEngine;
+     RiskModule riskModule;
++    PortfolioLens portfolioLens;
+     PositionManager positionManager;
+ 
+     FixedPriceOracle oneEthOracle;
+@@ -27,6 +30,7 @@ contract RiskModuleUnitTests is BaseTest {
+         pool = protocol.pool();
+         riskEngine = protocol.riskEngine();
+         riskModule = protocol.riskModule();
++        portfolioLens = protocol.portfolioLens();
+         positionManager = protocol.positionManager();
+ 
+         vm.startPrank(protocolOwner);
+@@ -51,18 +55,19 @@ contract RiskModuleUnitTests is BaseTest {
+         vm.stopPrank();
+     }
+ 
+-    function testRiskModuleInit(address testRegistry, uint256 liqDiscount) public {
+-        RiskModule testRiskModule = new RiskModule(testRegistry, liqDiscount);
++    function testRiskModuleInit(address testRegistry, uint256 liqDiscount, uint256 liquidationFee) public {
++        RiskModule testRiskModule = new RiskModule(testRegistry, liqDiscount, liquidationFee);
+ 
+         assertEq(address(testRiskModule.REGISTRY()), testRegistry);
+         assertEq(testRiskModule.LIQUIDATION_DISCOUNT(), liqDiscount);
++        assertEq(testRiskModule.LIQUIDATION_FEE(), liquidationFee);
+     }
+ 
+     function testAssetValueFuncs() public {
+         vm.startPrank(user);
+         asset2.approve(address(positionManager), 1e18);
+ 
+-        // deposit 1e18 asset2, borrow 1e18 asset1
++        // deposit 1e18 asset2
+         Action[] memory actions = new Action[](3);
+         (position, actions[0]) = newPosition(user, bytes32(uint256(0x123456789)));
+         actions[1] = deposit(address(asset2), 1e18);
+@@ -70,8 +75,8 @@ contract RiskModuleUnitTests is BaseTest {
+         positionManager.processBatch(position, actions);
+         vm.stopPrank();
+ 
+-        assertEq(riskModule.getTotalAssetValue(position), 1e18);
+-        assertEq(riskModule.getAssetValue(position, address(asset2)), 1e18);
++        assertEq(portfolioLens.getTotalAssetValue(position), 1e18);
++        assertEq(riskEngine.getValueInEth(address(asset2), asset2.balanceOf(position)), 1e18);
+     }
+ 
+     function testDebtValueFuncs() public {
+@@ -91,8 +96,10 @@ contract RiskModuleUnitTests is BaseTest {
+         positionManager.processBatch(position, actions);
+         vm.stopPrank();
+ 
+-        assertEq(riskModule.getTotalDebtValue(position), 1e18);
+-        assertEq(riskModule.getDebtValueForPool(position, fixedRatePool), 1e18);
++        assertEq(portfolioLens.getTotalDebtValue(position), 1e18);
++        address poolAsset = pool.getPoolAssetFor(fixedRatePool);
++        uint256 borrowAmt = pool.getBorrowsOf(fixedRatePool, position);
++        assertEq(riskEngine.getValueInEth(poolAsset, borrowAmt), 1e18);
+     }
+ 
+     function testUnsupportedAsset() public {

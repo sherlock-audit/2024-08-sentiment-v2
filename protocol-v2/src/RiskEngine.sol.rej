@@ -1,0 +1,206 @@
+diff a/protocol-v2/src/RiskEngine.sol b/protocol-v2/src/RiskEngine.sol	(rejected hunks)
+@@ -1,15 +1,12 @@
+ // SPDX-License-Identifier: MIT
+ pragma solidity ^0.8.24;
+ 
+-/*//////////////////////////////////////////////////////////////
+-                            RiskEngine
+-//////////////////////////////////////////////////////////////*/
+-
+ // types
+ import { Pool } from "./Pool.sol";
+ import { AssetData, DebtData } from "./PositionManager.sol";
+ import { Registry } from "./Registry.sol";
+ import { RiskModule } from "./RiskModule.sol";
++import { IOracle } from "./interfaces/IOracle.sol";
+ 
+ // contracts
+ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+@@ -47,23 +44,25 @@ contract RiskEngine is Ownable {
+     uint256 public maxLtv;
+ 
+     /// @notice Sentiment Registry
+-    Registry public immutable REGISTRY;
++    Registry public registry;
+     /// @notice Sentiment Singleton Pool
+     Pool public pool;
+     /// @notice Sentiment Risk Module
+     RiskModule public riskModule;
+ 
+     /// @dev Asset to Oracle mapping
+-    mapping(address asset => address oracle) internal oracleFor;
+-
++    mapping(address asset => address oracle) public oracleFor;
+     /// @notice Fetch the ltv for a given asset in a pool
+     mapping(uint256 poolId => mapping(address asset => uint256 ltv)) public ltvFor;
+-
+     /// @notice Fetch pending LTV update details for a given pool and asset pair, if any
+     mapping(uint256 poolId => mapping(address asset => LtvUpdate ltvUpdate)) public ltvUpdateFor;
++    /// @notice Check if poolA lends to positions that also borrow from poolB
++    mapping(uint256 poolA => mapping(uint256 poolB => bool isAllowed)) public isAllowedPair;
+ 
+     /// @notice Pool address was updated
+     event PoolSet(address pool);
++    /// @notice Registry address was updated
++    event RegistrySet(address registry);
+     /// @notice Risk Module address was updated
+     event RiskModuleSet(address riskModule);
+     /// @notice Protocol LTV bounds were updated
+@@ -76,6 +75,8 @@ contract RiskEngine is Ownable {
+     event LtvUpdateAccepted(uint256 indexed poolId, address indexed asset, uint256 ltv);
+     /// @notice LTV update was requested
+     event LtvUpdateRequested(uint256 indexed poolId, address indexed asset, LtvUpdate ltvUpdate);
++    /// @notice Allowed base pool pair toggled
++    event PoolPairToggled(uint256 indexed poolA, uint256 indexed poolB, bool isAllowed);
+ 
+     /// @notice There is no oracle associated with the given asset
+     error RiskEngine_NoOracleFound(address asset);
+@@ -95,6 +96,10 @@ contract RiskEngine is Ownable {
+     error RiskEngine_MaxLtvTooHigh();
+     /// @notice Pool LTV for the asset being lent out must be zero
+     error RiskEngine_CannotBorrowPoolAsset(uint256 poolId);
++    /// @notice Min Ltv is not less than Max Ltv
++    error RiskEngine_InvalidLtvLimits(uint256 minLtv, uint256 maxLtv);
++    /// @notice Base pool has not been initialized
++    error RiskEngine_InvalidBasePool(uint256 poolId);
+ 
+     /// @param registry_ Sentiment Registry
+     /// @param minLtv_ Minimum LTV bound
+@@ -102,8 +107,9 @@ contract RiskEngine is Ownable {
+     constructor(address registry_, uint256 minLtv_, uint256 maxLtv_) Ownable() {
+         if (minLtv_ == 0) revert RiskEngine_MinLtvTooLow();
+         if (maxLtv_ >= 1e18) revert RiskEngine_MaxLtvTooHigh();
++        if (minLtv_ >= maxLtv_) revert RiskEngine_InvalidLtvLimits(minLtv_, maxLtv_);
+ 
+-        REGISTRY = Registry(registry_);
++        registry = Registry(registry_);
+         minLtv = minLtv_;
+         maxLtv = maxLtv_;
+ 
+@@ -112,37 +118,48 @@ contract RiskEngine is Ownable {
+ 
+     /// @notice Fetch and update module addreses from the registry
+     function updateFromRegistry() external {
+-        pool = Pool(REGISTRY.addressFor(SENTIMENT_POOL_KEY));
+-        riskModule = RiskModule(REGISTRY.addressFor(SENTIMENT_RISK_MODULE_KEY));
+-
++        pool = Pool(registry.addressFor(SENTIMENT_POOL_KEY));
++        riskModule = RiskModule(registry.addressFor(SENTIMENT_RISK_MODULE_KEY));
+         emit PoolSet(address(pool));
+         emit RiskModuleSet(address(riskModule));
+     }
+ 
+-    /// @notice Fetch oracle address for a given asset
+-    function getOracleFor(address asset) public view returns (address) {
++    /// @notice Fetch value of given asset amount in ETH
++    function getValueInEth(address asset, uint256 amt) public view returns (uint256) {
++        if (amt == 0) return 0;
+         address oracle = oracleFor[asset];
+         if (oracle == address(0)) revert RiskEngine_NoOracleFound(asset);
+-        return oracle;
++        return IOracle(oracle).getValueInEth(asset, amt);
+     }
+ 
+-    /// @notice Check if the given position is healthy
+-    function isPositionHealthy(address position) external view returns (bool) {
+-        // call health check implementation based on position type
+-        return riskModule.isPositionHealthy(position);
++    /// @notice Fetch position health factor
++    function getPositionHealthFactor(address position) external view returns (uint256) {
++        return riskModule.getPositionHealthFactor(position);
+     }
+ 
+-    /// @notice Valid liquidator data and value of assets seized
++    /// @notice Validate liquidator data and value of assets seized
+     function validateLiquidation(
+         address position,
+         DebtData[] calldata debtData,
+         AssetData[] calldata assetData
+-    ) external view {
+-        riskModule.validateLiquidation(position, debtData, assetData);
++    )
++        external
++        view
++        returns (uint256, uint256, DebtData[] memory, AssetData[] memory)
++    {
++        return riskModule.validateLiquidation(position, debtData, assetData);
+     }
+ 
+-    function validateBadDebt(address position) external view {
+-        riskModule.validateBadDebt(position);
++    /// @notice Validate liquidator data for assets to be repaid
++    function validateBadDebtLiquidation(
++        address position,
++        DebtData[] calldata debtData
++    )
++        external
++        view
++        returns (DebtData[] memory, AssetData[] memory)
++    {
++        return riskModule.validateBadDebtLiquidation(position, debtData);
+     }
+ 
+     /// @notice Fetch risk-associated data for a given position
+@@ -154,12 +171,13 @@ contract RiskEngine is Ownable {
+         return riskModule.getRiskData(position);
+     }
+ 
+-    function getTotalAssetValue(address position) external view returns (uint256) {
+-        return riskModule.getTotalAssetValue(position);
+-    }
+-
+-    function getTotalDebtValue(address position) external view returns (uint256) {
+-        return riskModule.getTotalDebtValue(position);
++    /// @notice Allow poolA to lend against positions that also borrow from poolB
++    /// @dev When toggled or untoggled, only applies to future borrows
++    function toggleAllowedPoolPair(uint256 poolA, uint256 poolB) external {
++        if (pool.ownerOf(poolA) != msg.sender) revert RiskEngine_OnlyPoolOwner(poolA, msg.sender);
++        if (pool.ownerOf(poolB) == address(0)) revert RiskEngine_InvalidBasePool(poolB);
++        isAllowedPair[poolA][poolB] = !isAllowedPair[poolA][poolB];
++        emit PoolPairToggled(poolA, poolB, isAllowedPair[poolA][poolB]);
+     }
+ 
+     /// @notice Propose an LTV update for a given Pool-Asset pair
+@@ -189,6 +207,7 @@ contract RiskEngine is Ownable {
+     /// @notice Apply a pending LTV update
+     function acceptLtvUpdate(uint256 poolId, address asset) external {
+         if (msg.sender != pool.ownerOf(poolId)) revert RiskEngine_OnlyPoolOwner(poolId, msg.sender);
++        if (oracleFor[asset] == address(0)) revert RiskEngine_NoOracleFound(asset);
+ 
+         LtvUpdate memory ltvUpdate = ltvUpdateFor[poolId][asset];
+ 
+@@ -222,6 +241,7 @@ contract RiskEngine is Ownable {
+     function setLtvBounds(uint256 _minLtv, uint256 _maxLtv) external onlyOwner {
+         if (_minLtv == 0) revert RiskEngine_MinLtvTooLow();
+         if (_maxLtv >= 1e18) revert RiskEngine_MaxLtvTooHigh();
++        if (_minLtv >= _maxLtv) revert RiskEngine_InvalidLtvLimits(_minLtv, _maxLtv);
+ 
+         minLtv = _minLtv;
+         maxLtv = _maxLtv;
+@@ -229,15 +249,6 @@ contract RiskEngine is Ownable {
+         emit LtvBoundsSet(_minLtv, _maxLtv);
+     }
+ 
+-    /// @notice Set the risk module used to store risk logic for positions
+-    /// @dev only callable by RiskEngine owner
+-    /// @param _riskModule the address of the risk module implementation
+-    function setRiskModule(address _riskModule) external onlyOwner {
+-        riskModule = RiskModule(_riskModule);
+-
+-        emit RiskModuleSet(_riskModule);
+-    }
+-
+     /// @notice Set the oracle address used to price a given asset
+     /// @dev Does not support ERC777s, rebasing and fee-on-transfer tokens
+     function setOracle(address asset, address oracle) external onlyOwner {
+@@ -245,4 +256,10 @@ contract RiskEngine is Ownable {
+ 
+         emit OracleSet(asset, oracle);
+     }
++
++    /// @notice Update the registry associated with this Risk Engine
++    function setRegistry(address newRegistry) external onlyOwner {
++        registry = Registry(newRegistry);
++        emit RegistrySet(newRegistry);
++    }
+ }

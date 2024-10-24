@@ -1,0 +1,96 @@
+diff a/protocol-v2/test/core/PositionManager.t.sol b/protocol-v2/test/core/PositionManager.t.sol	(rejected hunks)
+@@ -76,7 +76,7 @@ contract PositionManagerUnitTests is BaseTest {
+         address beacon = address((new TransparentUpgradeableProxy(positionManagerImpl, positionOwner, new bytes(0))));
+         positionManager = PositionManager(beacon); // setup proxy
+ 
+-        PositionManager(positionManager).initialize(protocolOwner, address(registry), 550);
++        PositionManager(positionManager).initialize(protocolOwner, address(registry));
+ 
+         registry.setAddress(SENTIMENT_POSITION_BEACON_KEY, beacon);
+         registry.setAddress(SENTIMENT_POOL_KEY, address(pool));
+@@ -152,9 +152,7 @@ contract PositionManagerUnitTests is BaseTest {
+         PositionManager(positionManager).processBatch(position, actions);
+ 
+         (uint256 totalAssetValue, uint256 totalDebtValue, uint256 minReqAssetValue) = riskEngine.getRiskData(position);
+-        assertEq(
+-            totalAssetValue, IOracle(riskEngine.getOracleFor(address(asset2))).getValueInEth(address(asset2), amount)
+-        );
++        assertEq(totalAssetValue, riskEngine.getValueInEth(address(asset2), amount));
+         assertEq(totalDebtValue, 0);
+         assertEq(minReqAssetValue, 0);
+         assertEq(asset2.balanceOf(address(position)), amount);
+@@ -206,13 +204,13 @@ contract PositionManagerUnitTests is BaseTest {
+         actions[0] = action;
+ 
+         uint256 initialAssetBalance = asset1.balanceOf(position);
+-        (,,,,,,, uint256 totalBorrowAssets,,,) = pool.poolDataFor(linearRatePool);
++        (,,,,,,,, uint256 totalBorrowAssets,,,) = pool.poolDataFor(linearRatePool);
+         assertEq(address(positionManager.pool()), address(pool));
+ 
+         PositionManager(positionManager).processBatch(position, actions);
+ 
+         assertGt(asset1.balanceOf(position), initialAssetBalance);
+-        (,,,,,,, uint256 newTotalBorrowAssets,,,) = pool.poolDataFor(linearRatePool);
++        (,,,,,,,, uint256 newTotalBorrowAssets,,,) = pool.poolDataFor(linearRatePool);
+         assertEq(newTotalBorrowAssets, totalBorrowAssets + 2 ether);
+     }
+ 
+@@ -259,7 +257,11 @@ contract PositionManagerUnitTests is BaseTest {
+         vm.prank(protocolOwner);
+         registry.setRateModel(RATE_MODEL_KEY, rateModel);
+ 
+-        uint256 corruptPool = pool.initializePool(address(0xdead), address(asset1), type(uint128).max, RATE_MODEL_KEY);
++        asset1.mint(address(this), 1e7);
++        asset1.approve(address(pool), 1e7);
++        uint256 corruptPool = pool.initializePool(
++            address(0xdead), address(asset1), RATE_MODEL_KEY, type(uint256).max, type(uint256).max, 1e7
++        );
+ 
+         vm.startPrank(positionOwner);
+         bytes memory data = abi.encode(corruptPool, 2 ether);
+@@ -282,12 +284,12 @@ contract PositionManagerUnitTests is BaseTest {
+         Action[] memory actions = new Action[](1);
+         actions[0] = action;
+ 
+-        (,,,,,,, uint256 totalBorrowAssets,,,) = pool.poolDataFor(linearRatePool);
++        (,,,,,,,, uint256 totalBorrowAssets,,,) = pool.poolDataFor(linearRatePool);
+         uint256 initialBorrow = pool.getBorrowsOf(linearRatePool, position);
+ 
+         PositionManager(positionManager).processBatch(position, actions);
+ 
+-        (,,,,,,, uint256 newTotalBorrowAssets,,,) = pool.poolDataFor(linearRatePool);
++        (,,,,,,,, uint256 newTotalBorrowAssets,,,) = pool.poolDataFor(linearRatePool);
+ 
+         uint256 borrow = pool.getBorrowsOf(linearRatePool, position);
+ 
+@@ -394,30 +396,6 @@ contract PositionManagerUnitTests is BaseTest {
+         assertEq(testContract.ping(), 1);
+     }
+ 
+-    // Test setting the beacon address
+-    function testSetBeacon() public {
+-        address newBeacon = makeAddr("newBeacon");
+-        vm.prank(positionManager.owner());
+-        positionManager.setBeacon(newBeacon);
+-        assertEq(positionManager.positionBeacon(), newBeacon, "Beacon address should be updated");
+-
+-        vm.startPrank(makeAddr("nonOwner")); // Non-owner address
+-        vm.expectRevert();
+-        positionManager.setBeacon(newBeacon);
+-    }
+-
+-    // Test setting the liquidation fee
+-    function testSetLiquidationFee() public {
+-        uint256 newFee = 100; // Example fee
+-        vm.prank(positionManager.owner());
+-        positionManager.setLiquidationFee(newFee);
+-        assertEq(positionManager.liquidationFee(), newFee, "Liquidation fee should be updated");
+-
+-        vm.startPrank(makeAddr("nonOwner")); // Non-owner address
+-        vm.expectRevert();
+-        positionManager.setLiquidationFee(newFee);
+-    }
+-
+     // Test toggling known asset
+     function testToggleKnownAsset() public {
+         address target = makeAddr("target");

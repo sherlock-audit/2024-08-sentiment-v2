@@ -1,0 +1,59 @@
+diff a/protocol-v2/test/core/Superpool.t.sol b/protocol-v2/test/core/Superpool.t.sol	(rejected hunks)
+@@ -6,7 +6,7 @@ import { console2 } from "forge-std/console2.sol";
+ import { FixedPriceOracle } from "src/oracle/FixedPriceOracle.sol";
+ 
+ contract SuperPoolUnitTests is BaseTest {
+-    uint256 initialDepositAmt = 1e5;
++    uint256 initialDepositAmt = 1e7;
+ 
+     Pool pool;
+     Registry registry;
+@@ -98,8 +98,11 @@ contract SuperPoolUnitTests is BaseTest {
+         vm.prank(protocolOwner);
+         Registry(registry).setRateModel(RATE_MODEL_KEY, linearRateModel);
+ 
++        asset1.mint(poolOwner, 1e7);
+         vm.startPrank(poolOwner);
+-        uint256 linearPool = pool.initializePool(poolOwner, address(asset1), type(uint128).max, RATE_MODEL_KEY);
++        asset1.approve(address(pool), 1e7);
++        uint256 linearPool =
++            pool.initializePool(poolOwner, address(asset1), RATE_MODEL_KEY, type(uint256).max, type(uint256).max, 1e7);
+         superPool.addPool(linearPool, 50 ether);
+         vm.stopPrank();
+     }
+@@ -163,7 +166,7 @@ contract SuperPoolUnitTests is BaseTest {
+         uint256 shares = superPool.deposit(100 ether, user);
+         assertEq(shares, expectedShares);
+ 
+-        assertEq(asset1.balanceOf(address(pool)), 100 ether);
++        assertGe(asset1.balanceOf(address(pool)), 100 ether);
+         vm.stopPrank();
+     }
+ 
+@@ -250,7 +253,7 @@ contract SuperPoolUnitTests is BaseTest {
+         uint256 shares = superPool.deposit(200 ether, user);
+ 
+         assertEq(shares, expectedShares);
+-        assertEq(asset1.balanceOf(address(pool)), 200 ether);
++        assertGe(asset1.balanceOf(address(pool)), 200 ether);
+     }
+ 
+     function testDepositMoreThanPoolCap() public {
+@@ -316,15 +319,13 @@ contract SuperPoolUnitTests is BaseTest {
+ 
+     function testSetSuperPoolFee() public {
+         vm.startPrank(poolOwner);
+-        superPool.requestFeeUpdate(0.04 ether);
+-        vm.warp(26 hours);
+-        superPool.acceptFeeUpdate();
++        superPool.setSuperpoolFee(0.04 ether);
+         assertEq(superPool.fee(), 0.04 ether);
+         vm.stopPrank();
+ 
+         vm.startPrank(user);
+         vm.expectRevert();
+-        superPool.requestFeeUpdate(0.04 ether);
++        superPool.setSuperpoolFee(0.04 ether);
+     }
+ 
+     function testToggleAllocator() public {
