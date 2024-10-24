@@ -38,15 +38,14 @@ contract RiskEngineUnitTests is BaseTest {
 
     function testRiskEngineInit() public {
         RiskEngine testRiskEngine = new RiskEngine(address(registry), 0.2e18, 0.8e18);
-        assertEq(address(testRiskEngine.REGISTRY()), address(registry));
+        assertEq(address(testRiskEngine.registry()), address(registry));
         assertEq(testRiskEngine.minLtv(), 0.2e18);
         assertEq(testRiskEngine.maxLtv(), 0.8e18);
     }
 
-    function testNoOracleFound(address asset) public {
+    function testNoOracleFound(address asset) public view {
         vm.assume(asset != address(asset1) && asset != address(asset2));
-        vm.expectRevert(abi.encodeWithSelector(RiskEngine.RiskEngine_NoOracleFound.selector, asset));
-        riskEngine.getOracleFor(asset);
+        assertEq(riskEngine.oracleFor(asset), address(0));
     }
 
     function testOwnerCanUpdateLTV() public {
@@ -91,10 +90,12 @@ contract RiskEngineUnitTests is BaseTest {
         assertEq(riskEngine.ltvFor(linearRatePool, address(asset2)), 0.75e18);
     }
 
-    function testNoLTVUpdate(address asset) public {
+    function testNoLTVUpdate() public {
         vm.prank(poolOwner);
-        vm.expectRevert(abi.encodeWithSelector(RiskEngine.RiskEngine_NoLtvUpdate.selector, linearRatePool, asset));
-        riskEngine.acceptLtvUpdate(linearRatePool, asset);
+        vm.expectRevert(
+            abi.encodeWithSelector(RiskEngine.RiskEngine_NoLtvUpdate.selector, linearRatePool, address(asset1))
+        );
+        riskEngine.acceptLtvUpdate(linearRatePool, address(asset1));
     }
 
     function testNonOwnerCannotUpdateLTV() public {
@@ -123,16 +124,6 @@ contract RiskEngineUnitTests is BaseTest {
         riskEngine.requestLtvUpdate(linearRatePool, address(asset1), 0.76e18);
 
         assertEq(riskEngine.ltvFor(linearRatePool, address(asset1)), 0);
-    }
-
-    function testCanUpdateRiskModule() public {
-        vm.prank(protocolOwner);
-        riskEngine.setRiskModule(address(0x3828342));
-        assertEq(address(riskEngine.riskModule()), address(0x3828342));
-
-        vm.startPrank(address(0x21));
-        vm.expectRevert();
-        riskEngine.setRiskModule(address(0x821813));
     }
 
     function testCannotUpdateLTVBeforeTimelock() public {

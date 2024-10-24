@@ -1,22 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/*//////////////////////////////////////////////////////////////
-                        ChainlinkUsdOracle
-//////////////////////////////////////////////////////////////*/
-
 import { IOracle } from "../interfaces/IOracle.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
-interface IAggegregatorV3 {
+/// @title IAggregatorV3
+/// @notice Chainlink Aggregator v3 interface
+interface IAggregatorV3 {
     function latestRoundData()
         external
         view
         returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
 
-    function decimals() external view returns (uint256);
+    function decimals() external view returns (uint8);
 }
 
 /// @title ChainlinkUsdOracle
@@ -26,25 +24,25 @@ contract ChainlinkUsdOracle is Ownable, IOracle {
 
     /// @dev internal alias for native ETH
     address private constant ETH = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
-
     /// @notice L2 sequencer uptime grace period during which prices are treated as stale
     uint256 public constant SEQ_GRACE_PERIOD = 3600; // 1 hour
 
     /// @notice Chainlink arbitrum sequencer uptime feed
-    IAggegregatorV3 public immutable ARB_SEQ_FEED;
+    IAggregatorV3 public immutable ARB_SEQ_FEED;
 
-    /// @notice Chainlink ETH/USD price feed
-    IAggegregatorV3 public immutable ETH_USD_FEED;
+    struct PriceFeed {
+        address feed;
+        uint256 feedDecimals;
+        uint256 assetDecimals;
+        uint256 stalePriceThreshold;
+    }
 
     /// @notice Fetch the ETH-denominated price feed associated with a given asset
     /// @dev returns address(0) if there is no associated feed
-    mapping(address asset => address feed) public priceFeedFor;
-
-    /// @notice Prices older than the stale price threshold are considered invalid
-    mapping(address feed => uint256 stalePriceThreshold) public stalePriceThresholdFor;
+    mapping(address asset => PriceFeed feed) public priceFeedFor;
 
     /// @notice New Usd-denomiated chainlink feed has been associated with an asset
-    event FeedSet(address indexed asset, address feed);
+    event FeedSet(address indexed asset, PriceFeed feedData);
 
     /// @notice L2 sequencer is experiencing downtime
     error ChainlinkUsdOracle_SequencerDown();
@@ -56,16 +54,24 @@ contract ChainlinkUsdOracle is Ownable, IOracle {
     error ChainlinkUsdOracle_NonPositivePrice(address asset);
     /// @notice Invalid oracle update round
     error ChainlinkUsdOracle_InvalidRound();
+    /// @notice Missing price feed
+    error ChainlinkUsdOracle_MissingPriceFeed(address asset);
 
     /// @param owner Oracle owner address
     /// @param arbSeqFeed Chainlink arbitrum sequencer feed
     /// @param ethUsdFeed Chainlink ETH/USD price feed
     /// @param ethUsdThreshold Stale price threshold for ETH/USD feed
     constructor(address owner, address arbSeqFeed, address ethUsdFeed, uint256 ethUsdThreshold) Ownable() {
-        ARB_SEQ_FEED = IAggegregatorV3(arbSeqFeed);
-        ETH_USD_FEED = IAggegregatorV3(ethUsdFeed);
-        priceFeedFor[ETH] = ethUsdFeed;
-        stalePriceThresholdFor[ETH] = ethUsdThreshold;
+        ARB_SEQ_FEED = IAggregatorV3(arbSeqFeed);
+
+        PriceFeed memory feed = PriceFeed({
+            feed: ethUsdFeed,
+            feedDecimals: IAggregatorV3(ethUsdFeed).decimals(),
+            assetDecimals: 18,
+            stalePriceThreshold: ethUsdThreshold
+        });
+        priceFeedFor[ETH] = feed;
+        emit FeedSet(ETH, feed);
 
         _transferOwnership(owner);
     }
@@ -75,15 +81,19 @@ contract ChainlinkUsdOracle is Ownable, IOracle {
     /// @param amt Amount of the given asset to be priced
     function getValueInEth(address asset, uint256 amt) external view returns (uint256) {
         _checkSequencerFeed();
+        PriceFeed storage priceFeed = priceFeedFor[asset];
 
-        uint256 ethUsdPrice = _getPriceWithSanityChecks(ETH);
-        uint256 assetUsdPrice = _getPriceWithSanityChecks(asset);
+        // fetch asset/usd and eth/usd price scaled to 18 decimals
+        uint256 assetUsdPrice = _getPriceWithSanityChecks(asset, priceFeed);
+        uint256 ethUsdPrice = _getPriceWithSanityChecks(ETH, priceFeedFor[ETH]);
 
-        uint256 decimals = IERC20Metadata(asset).decimals();
+        // scale amt to 18 decimals
+        uint256 scaledAmt;
+        uint256 assetDecimals = priceFeed.assetDecimals;
+        if (assetDecimals <= 18) scaledAmt = amt * (10 ** (18 - assetDecimals));
+        else scaledAmt = amt / (10 ** (assetDecimals - 18));
 
-        // [ROUND] price is rounded down. this is used for both debt and asset math, no effect
-        if (decimals <= 18) return (amt * 10 ** (18 - decimals)).mulDiv(uint256(assetUsdPrice), uint256(ethUsdPrice));
-        else return (amt / (10 ** decimals - 18)).mulDiv(uint256(assetUsdPrice), uint256(ethUsdPrice));
+        return scaledAmt.mulDiv(assetUsdPrice, ethUsdPrice);
     }
 
     /// @notice Set Chainlink ETH-denominated feed for an asset
@@ -92,10 +102,14 @@ contract ChainlinkUsdOracle is Ownable, IOracle {
     /// @param stalePriceThreshold prices older than this duration are considered invalid, denominated in seconds
     /// @dev stalePriceThreshold must be equal or greater to the feed's heartbeat
     function setFeed(address asset, address feed, uint256 stalePriceThreshold) external onlyOwner {
-        assert(IAggegregatorV3(feed).decimals() == 8);
-        priceFeedFor[asset] = feed;
-        stalePriceThresholdFor[feed] = stalePriceThreshold;
-        emit FeedSet(asset, feed);
+        PriceFeed memory feedData = PriceFeed({
+            feed: feed,
+            feedDecimals: IAggregatorV3(feed).decimals(),
+            assetDecimals: IERC20Metadata(asset).decimals(),
+            stalePriceThreshold: stalePriceThreshold
+        });
+        priceFeedFor[asset] = feedData;
+        emit FeedSet(asset, feedData);
     }
 
     /// @dev Check L2 sequencer health
@@ -111,11 +125,19 @@ contract ChainlinkUsdOracle is Ownable, IOracle {
     }
 
     /// @dev Fetch price from chainlink feed with sanity checks
-    function _getPriceWithSanityChecks(address asset) private view returns (uint256) {
-        address feed = priceFeedFor[asset];
-        (, int256 price,, uint256 updatedAt,) = IAggegregatorV3(feed).latestRoundData();
+    function _getPriceWithSanityChecks(address asset, PriceFeed storage priceFeed) private view returns (uint256) {
+        // check if feed exists
+        address feed = priceFeed.feed;
+        if (feed == address(0)) revert ChainlinkUsdOracle_MissingPriceFeed(asset);
+
+        // fetch price with checks
+        (, int256 price,, uint256 updatedAt,) = IAggregatorV3(feed).latestRoundData();
         if (price <= 0) revert ChainlinkUsdOracle_NonPositivePrice(asset);
-        if (updatedAt < block.timestamp - stalePriceThresholdFor[feed]) revert ChainlinkUsdOracle_StalePrice(asset);
-        return uint256(price);
+        if (updatedAt < block.timestamp - priceFeed.stalePriceThreshold) revert ChainlinkUsdOracle_StalePrice(asset);
+
+        // scale price to 18 decimals
+        uint256 feedDecimals = priceFeed.feedDecimals;
+        if (feedDecimals <= 18) return uint256(price) * (10 ** (18 - feedDecimals));
+        else return uint256(price) / (10 ** (feedDecimals - 18));
     }
 }

@@ -12,13 +12,13 @@ import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title IAggregatorV3
 /// @notice Chainlink Aggregator v3 interface
-interface IAggegregatorV3 {
+interface IAggregatorV3 {
     function latestRoundData()
         external
         view
         returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
 
-    function decimals() external view returns (uint256);
+    function decimals() external view returns (uint8);
 }
 
 /// @title ChainlinkEthOracle
@@ -30,17 +30,20 @@ contract ChainlinkEthOracle is Ownable, IOracle {
     uint256 public constant SEQ_GRACE_PERIOD = 3600; // 1 hour
 
     /// @notice Chainlink arbitrum sequencer uptime feed
-    IAggegregatorV3 public immutable ARB_SEQ_FEED;
+    IAggregatorV3 public immutable ARB_SEQ_FEED;
 
-    /// @notice Fetch the ETH-denominated price feed associated with a given asset
-    /// @dev returns address(0) if there is no associated feed
-    mapping(address asset => address feed) public priceFeedFor;
+    struct PriceFeed {
+        address feed;
+        uint256 feedDecimals;
+        uint256 assetDecimals;
+        uint256 stalePriceThreshold;
+    }
 
-    /// @notice Prices older than the stale price threshold are considered invalid
-    mapping(address feed => uint256 stalePriceThreshold) public stalePriceThresholdFor;
+    /// @notice Fetch configured feed data for a given asset
+    mapping(address asset => PriceFeed feed) public priceFeedFor;
 
     /// @notice An Eth-denomiated chainlink feed has been associated with an asset
-    event FeedSet(address indexed asset, address feed);
+    event FeedSet(address indexed asset, PriceFeed feedData);
 
     /// @notice L2 sequencer is experiencing downtime
     error ChainlinkEthOracle_SequencerDown();
@@ -52,11 +55,13 @@ contract ChainlinkEthOracle is Ownable, IOracle {
     error ChainlinkEthOracle_NonPositivePrice(address asset);
     /// @notice Invalid oracle update round
     error ChainlinkEthOracle_InvalidRound();
+    /// @notice Missing price feed
+    error ChainlinkEthOracle_MissingPriceFeed(address asset);
 
     /// @param owner Oracle owner address
     /// @param arbSeqFeed Chainlink arbitrum sequencer feed
     constructor(address owner, address arbSeqFeed) Ownable() {
-        ARB_SEQ_FEED = IAggegregatorV3(arbSeqFeed);
+        ARB_SEQ_FEED = IAggregatorV3(arbSeqFeed);
 
         _transferOwnership(owner);
     }
@@ -67,8 +72,9 @@ contract ChainlinkEthOracle is Ownable, IOracle {
     function getValueInEth(address asset, uint256 amt) external view returns (uint256) {
         _checkSequencerFeed();
 
+        PriceFeed storage priceFeed = priceFeedFor[asset];
         // [ROUND] price is rounded down. this is used for both debt and asset math, neutral effect.
-        return amt.mulDiv(_getPriceWithSanityChecks(asset), (10 ** IERC20Metadata(asset).decimals()));
+        return amt.mulDiv(_getPriceWithSanityChecks(asset, priceFeed), priceFeed.assetDecimals);
     }
 
     /// @notice Set Chainlink ETH-denominated feed for an asset
@@ -77,10 +83,14 @@ contract ChainlinkEthOracle is Ownable, IOracle {
     /// @param stalePriceThreshold prices older than this duration are considered invalid, denominated in seconds
     /// @dev stalePriceThreshold must be equal or greater to the feed's heartbeat
     function setFeed(address asset, address feed, uint256 stalePriceThreshold) external onlyOwner {
-        assert(IAggegregatorV3(feed).decimals() == 18);
-        priceFeedFor[asset] = feed;
-        stalePriceThresholdFor[feed] = stalePriceThreshold;
-        emit FeedSet(asset, feed);
+        PriceFeed memory feedData = PriceFeed({
+            feed: feed,
+            feedDecimals: IAggregatorV3(feed).decimals(),
+            assetDecimals: IERC20Metadata(asset).decimals(),
+            stalePriceThreshold: stalePriceThreshold
+        });
+        priceFeedFor[asset] = feedData;
+        emit FeedSet(asset, feedData);
     }
 
     /// @dev Check L2 sequencer health
@@ -96,11 +106,19 @@ contract ChainlinkEthOracle is Ownable, IOracle {
     }
 
     /// @dev Fetch price from chainlink feed with sanity checks
-    function _getPriceWithSanityChecks(address asset) private view returns (uint256) {
-        address feed = priceFeedFor[asset];
-        (, int256 price,, uint256 updatedAt,) = IAggegregatorV3(feed).latestRoundData();
+    function _getPriceWithSanityChecks(address asset, PriceFeed storage priceFeed) private view returns (uint256) {
+        // check if feed exists
+        address feed = priceFeed.feed;
+        if (feed == address(0)) revert ChainlinkEthOracle_MissingPriceFeed(asset);
+
+        // fetch price with checks
+        (, int256 price,, uint256 updatedAt,) = IAggregatorV3(feed).latestRoundData();
         if (price <= 0) revert ChainlinkEthOracle_NonPositivePrice(asset);
-        if (updatedAt < block.timestamp - stalePriceThresholdFor[feed]) revert ChainlinkEthOracle_StalePrice(asset);
-        return uint256(price);
+        if (updatedAt < block.timestamp - priceFeed.stalePriceThreshold) revert ChainlinkEthOracle_StalePrice(asset);
+
+        // scale price to 18 decimals
+        uint256 feedDecimals = priceFeed.feedDecimals;
+        if (feedDecimals <= 18) return uint256(price) * (10 ** (18 - feedDecimals));
+        else return uint256(price) / (10 ** (feedDecimals - 18));
     }
 }

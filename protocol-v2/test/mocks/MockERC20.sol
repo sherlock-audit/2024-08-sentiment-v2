@@ -113,7 +113,9 @@ contract MockERC20 {
         uint8 v,
         bytes32 r,
         bytes32 s
-    ) public {
+    )
+        public
+    {
         require(deadline >= block.timestamp, "PERMIT_DEADLINE_EXPIRED");
 
         // Unchecked because the only math done is incrementing
