@@ -18,7 +18,10 @@ interface IRateModel {
         uint256 lastUpdated,
         uint256 totalBorrows,
         uint256 totalAssets
-    ) external view returns (uint256 interestAccrued);
+    )
+        external
+        view
+        returns (uint256 interestAccrued);
 
     /// @notice Fetch the instantaneous borrow interest rate for a given pool state
     /// @param totalBorrows Total amount of assets borrowed from the pool

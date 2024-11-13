@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/*//////////////////////////////////////////////////////////////
-                                Pool
-//////////////////////////////////////////////////////////////*/
-
 // types
 import { Registry } from "./Registry.sol";
 import { RiskEngine } from "./RiskEngine.sol";
@@ -19,13 +15,21 @@ import { Math } from "@openzeppelin/contracts/utils/math/Math.sol";
 // contracts
 import { ERC6909 } from "./lib/ERC6909.sol";
 import { OwnableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import { PausableUpgradeable } from "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
 
 /// @title Pool
 /// @notice Singleton pool for all pools that superpools lend to and positions borrow from
-contract Pool is OwnableUpgradeable, ERC6909 {
+contract Pool is OwnableUpgradeable, PausableUpgradeable, ERC6909 {
     using Math for uint256;
     using SafeERC20 for IERC20;
 
+    address private constant DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+    /// @notice Maximum amount of deposit shares per base pool
+    uint256 public constant MAX_DEPOSIT_SHARES = type(uint112).max;
+    /// @notice Maximum amount of borrow shares per base pool
+    uint256 public constant MAX_BORROW_SHARES = type(uint112).max;
+    /// @notice Minimum amount of initial shares to be burned
+    uint256 public constant MIN_BURNED_SHARES = 1_000_000;
     /// @notice Timelock delay for pool rate model modification
     uint256 public constant TIMELOCK_DURATION = 24 * 60 * 60; // 24 hours
     /// @notice Timelock deadline to enforce timely updates
@@ -40,9 +44,9 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         0x5b6696788621a5d6b5e3b02a69896b9dd824ebf1631584f038a393c29b6d7555;
 
     /// @notice Initial interest fee for pools
-    uint128 public defaultInterestFee;
+    uint256 public defaultInterestFee;
     /// @notice Initial origination fee for pools
-    uint128 public defaultOriginationFee;
+    uint256 public defaultOriginationFee;
 
     /// @notice Sentiment registry
     address public registry;
@@ -69,10 +73,11 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         bool isPaused;
         address asset;
         address rateModel;
-        uint128 poolCap;
-        uint128 lastUpdated;
-        uint128 interestFee;
-        uint128 originationFee;
+        uint256 borrowCap;
+        uint256 depositCap;
+        uint256 lastUpdated;
+        uint256 interestFee;
+        uint256 originationFee;
         uint256 totalBorrowAssets;
         uint256 totalBorrowShares;
         uint256 totalDepositAssets;
@@ -92,24 +97,32 @@ contract Pool is OwnableUpgradeable, ERC6909 {
     /// @notice Fetch pending rate model updates for a given pool id
     mapping(uint256 poolId => RateModelUpdate rateModelUpdate) public rateModelUpdateFor;
 
+    /// @notice Position Manager addresss was updated
+    event PositionManagerSet(address positionManager);
+    /// @notice Risk Engine address was updated
+    event RiskEngineSet(address riskEngine);
     /// @notice Minimum debt amount set
     event MinDebtSet(uint256 minDebt);
     /// @notice Minimum borrow amount set
     event MinBorrowSet(uint256 minBorrow);
     /// @notice Registry address was set
     event RegistrySet(address registry);
+    /// @notice Pool fee recipient set
+    event FeeRecipientSet(address feeRecipient);
     /// @notice Paused state of a pool was toggled
     event PoolPauseToggled(uint256 poolId, bool paused);
     /// @notice Asset cap for a pool was set
-    event PoolCapSet(uint256 indexed poolId, uint128 poolCap);
+    event PoolCapSet(uint256 indexed poolId, uint256 poolCap);
+    /// @notice Borrow debt ceiling for a pool was set
+    event BorrowCapSet(uint256 indexed poolId, uint256 borrowCap);
     /// @notice Owner for a pool was set
     event PoolOwnerSet(uint256 indexed poolId, address owner);
     /// @notice Rate model for a pool was updated
     event RateModelUpdated(uint256 indexed poolId, address rateModel);
     /// @notice Interest fee for a pool was updated
-    event InterestFeeSet(uint256 indexed poolId, uint128 interestFee);
+    event InterestFeeSet(uint256 indexed poolId, uint256 interestFee);
     /// @notice Origination fee for a pool was updated
-    event OriginationFeeSet(uint256 indexed poolId, uint128 originationFee);
+    event OriginationFeeSet(uint256 indexed poolId, uint256 originationFee);
     /// @notice Pending rate model update for a pool was rejected
     event RateModelUpdateRejected(uint256 indexed poolId, address rateModel);
     /// @notice Rate model update for a pool was proposed
@@ -137,6 +150,12 @@ contract Pool is OwnableUpgradeable, ERC6909 {
     error Pool_ZeroAddressOwner();
     /// @notice Pool is paused
     error Pool_PoolPaused(uint256 poolId);
+    /// @notice Total Base Pool shares exceeds MAX_DEPOSIT_SHARES
+    error Pool_MaxDepositShares(uint256 poolId);
+    /// @notice Total borrow shares exceed MAX_BORROW_SHARES
+    error Pool_MaxBorrowShares(uint256 poolId);
+    /// @notice Pool borrow cap exceeded
+    error Pool_BorrowCapExceeded(uint256 poolId);
     /// @notice Pool deposits exceed asset cap
     error Pool_PoolCapExceeded(uint256 poolId);
     /// @notice No pending rate model update for the pool
@@ -144,7 +163,7 @@ contract Pool is OwnableUpgradeable, ERC6909 {
     /// @notice Attempt to initialize an already existing pool
     error Pool_PoolAlreadyInitialized(uint256 poolId);
     /// @notice Attempt to redeem zero shares worth of assets from the pool
-    error Pool_ZeroShareRedeem(uint256 poolId, uint256 assets);
+    error Pool_ZeroShareWithdraw(uint256 poolId, uint256 assets);
     /// @notice Attempt to repay zero shares worth of assets to the pool
     error Pool_ZeroSharesRepay(uint256 poolId, uint256 amt);
     /// @notice Attempt to borrow zero shares worth of assets from the pool
@@ -171,6 +190,12 @@ contract Pool is OwnableUpgradeable, ERC6909 {
     error Pool_DebtTooLow(uint256 poolId, address asset, uint256 amt);
     /// @notice No oracle found for pool asset
     error Pool_OracleNotFound(address asset);
+    /// @notice Fee recipient must be non-zero
+    error Pool_ZeroFeeRecipient();
+    /// @notice Pool has zero assets and non-zero shares
+    error Pool_ZeroAssetsNonZeroShares(uint256 poolId);
+    /// @notice Less than MIN_BURNED_SHARES burned during pool initialization
+    error Pool_MinBurnedShares(uint256 shares);
 
     constructor() {
         _disableInitializers();
@@ -182,14 +207,21 @@ contract Pool is OwnableUpgradeable, ERC6909 {
     /// @param feeRecipient_ Sentiment fee receiver
     function initialize(
         address owner_,
-        uint128 defaultInterestFee_,
-        uint128 defaultOriginationFee_,
         address registry_,
         address feeRecipient_,
+        uint256 minDebt_,
         uint256 minBorrow_,
-        uint256 minDebt_
-    ) public initializer {
+        uint256 defaultInterestFee_,
+        uint256 defaultOriginationFee_
+    )
+        public
+        initializer
+    {
         _transferOwnership(owner_);
+
+        if (defaultInterestFee_ > 1e18) revert Pool_FeeTooHigh();
+        if (defaultOriginationFee_ > 1e18) revert Pool_FeeTooHigh();
+        if (feeRecipient_ == address(0)) revert Pool_ZeroFeeRecipient();
 
         defaultInterestFee = defaultInterestFee_;
         defaultOriginationFee = defaultOriginationFee_;
@@ -204,6 +236,8 @@ contract Pool is OwnableUpgradeable, ERC6909 {
     function updateFromRegistry() public {
         positionManager = Registry(registry).addressFor(SENTIMENT_POSITION_MANAGER_KEY);
         riskEngine = Registry(registry).addressFor(SENTIMENT_RISK_ENGINE_KEY);
+        emit PositionManagerSet(positionManager);
+        emit RiskEngineSet(riskEngine);
     }
 
     /// @notice Fetch amount of liquid assets currently held in a given pool
@@ -258,6 +292,16 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         return poolDataFor[poolId].rateModel;
     }
 
+    /// @notice Fetch pool cap for a given pool
+    function getPoolCapFor(uint256 poolId) public view returns (uint256) {
+        return poolDataFor[poolId].depositCap;
+    }
+
+    /// @notice Fetch borrow cap for a given pool
+    function getBorrowCapFor(uint256 poolId) public view returns (uint256) {
+        return poolDataFor[poolId].borrowCap;
+    }
+
     /// @notice Fetch the debt asset address for a given pool
     function getPoolAssetFor(uint256 poolId) public view returns (address) {
         return poolDataFor[poolId].asset;
@@ -268,7 +312,11 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         uint256 assets,
         uint256 totalAssets,
         uint256 totalShares
-    ) external pure returns (uint256 shares) {
+    )
+        external
+        pure
+        returns (uint256 shares)
+    {
         shares = _convertToShares(assets, totalAssets, totalShares, Math.Rounding.Down);
     }
 
@@ -277,7 +325,11 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         uint256 totalAssets,
         uint256 totalShares,
         Math.Rounding rounding
-    ) internal pure returns (uint256 shares) {
+    )
+        internal
+        pure
+        returns (uint256 shares)
+    {
         if (totalAssets == 0) return assets;
         shares = assets.mulDiv(totalShares, totalAssets, rounding);
     }
@@ -287,7 +339,11 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         uint256 shares,
         uint256 totalAssets,
         uint256 totalShares
-    ) external pure returns (uint256 assets) {
+    )
+        external
+        pure
+        returns (uint256 assets)
+    {
         assets = _convertToAssets(shares, totalAssets, totalShares, Math.Rounding.Down);
     }
 
@@ -296,7 +352,11 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         uint256 totalAssets,
         uint256 totalShares,
         Math.Rounding rounding
-    ) internal pure returns (uint256 assets) {
+    )
+        internal
+        pure
+        returns (uint256 assets)
+    {
         if (totalShares == 0) return shares;
         assets = shares.mulDiv(totalAssets, totalShares, rounding);
     }
@@ -306,10 +366,11 @@ contract Pool is OwnableUpgradeable, ERC6909 {
     /// @param assets Amount of assets to be deposited
     /// @param receiver Address to deposit assets on behalf of
     /// @return shares Amount of pool deposit shares minted
-    function deposit(uint256 poolId, uint256 assets, address receiver) public returns (uint256 shares) {
+    function deposit(uint256 poolId, uint256 assets, address receiver) public whenNotPaused returns (uint256 shares) {
         PoolData storage pool = poolDataFor[poolId];
 
         if (pool.isPaused) revert Pool_PoolPaused(poolId);
+        if (pool.totalDepositAssets == 0 && pool.totalDepositShares != 0) revert Pool_ZeroAssetsNonZeroShares(poolId);
 
         // update state to accrue interest since the last time accrue() was called
         accrue(pool, poolId);
@@ -317,13 +378,13 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         // Need to transfer before or ERC777s could reenter, or bypass the pool cap
         IERC20(pool.asset).safeTransferFrom(msg.sender, address(this), assets);
 
-        if (pool.totalDepositAssets + assets > pool.poolCap) revert Pool_PoolCapExceeded(poolId);
-
         shares = _convertToShares(assets, pool.totalDepositAssets, pool.totalDepositShares, Math.Rounding.Down);
         if (shares == 0) revert Pool_ZeroSharesDeposit(poolId, assets);
 
         pool.totalDepositAssets += assets;
         pool.totalDepositShares += shares;
+        if (pool.totalDepositAssets > pool.depositCap) revert Pool_PoolCapExceeded(poolId);
+        if (pool.totalDepositShares > MAX_DEPOSIT_SHARES) revert Pool_MaxDepositShares(poolId);
 
         _mint(receiver, poolId, shares);
 
@@ -341,15 +402,20 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         uint256 assets,
         address receiver,
         address owner
-    ) public returns (uint256 shares) {
+    )
+        public
+        whenNotPaused
+        returns (uint256 shares)
+    {
         PoolData storage pool = poolDataFor[poolId];
+        if (pool.isPaused) revert Pool_PoolPaused(poolId);
 
         // update state to accrue interest since the last time accrue() was called
         accrue(pool, poolId);
 
         shares = _convertToShares(assets, pool.totalDepositAssets, pool.totalDepositShares, Math.Rounding.Up);
         // check for rounding error since convertToShares rounds down
-        if (shares == 0) revert Pool_ZeroShareRedeem(poolId, assets);
+        if (shares == 0) revert Pool_ZeroShareWithdraw(poolId, assets);
 
         if (msg.sender != owner && !isOperator[owner][msg.sender]) {
             uint256 allowed = allowance[owner][msg.sender][poolId];
@@ -378,6 +444,8 @@ contract Pool is OwnableUpgradeable, ERC6909 {
     }
 
     function simulateAccrue(PoolData storage pool) internal view returns (uint256, uint256) {
+        if (block.timestamp == pool.lastUpdated) return (0, 0);
+
         uint256 interestAccrued = IRateModel(pool.rateModel).getInterestAccrued(
             pool.lastUpdated, pool.totalBorrowAssets, pool.totalDepositAssets
         );
@@ -410,14 +478,22 @@ contract Pool is OwnableUpgradeable, ERC6909 {
 
         // store a timestamp for this accrue() call
         // used to compute the pending interest next time accrue() is called
-        pool.lastUpdated = uint128(block.timestamp);
+        pool.lastUpdated = block.timestamp;
     }
 
     /// @notice Mint borrow shares and send borrowed assets to the borrowing position
     /// @param position the position to mint shares to
     /// @param amt the amount of assets to borrow, denominated in notional asset units
     /// @return borrowShares the amount of shares minted
-    function borrow(uint256 poolId, address position, uint256 amt) external returns (uint256 borrowShares) {
+    function borrow(
+        uint256 poolId,
+        address position,
+        uint256 amt
+    )
+        external
+        whenNotPaused
+        returns (uint256 borrowShares)
+    {
         PoolData storage pool = poolDataFor[poolId];
 
         if (pool.isPaused) revert Pool_PoolPaused(poolId);
@@ -426,7 +502,9 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         if (msg.sender != positionManager) revert Pool_OnlyPositionManager(poolId, msg.sender);
 
         // revert if borrow amount is too low
-        if (_getValueOf(pool.asset, amt) < minBorrow) revert Pool_BorrowAmountTooLow(poolId, pool.asset, amt);
+        if (RiskEngine(riskEngine).getValueInEth(pool.asset, amt) < minBorrow) {
+            revert Pool_BorrowAmountTooLow(poolId, pool.asset, amt);
+        }
 
         // update state to accrue interest since the last time accrue() was called
         accrue(pool, poolId);
@@ -449,16 +527,18 @@ contract Pool is OwnableUpgradeable, ERC6909 {
             pool.totalBorrowShares + borrowShares,
             Math.Rounding.Down
         );
-        if (_getValueOf(pool.asset, newBorrowAssets) < minDebt) {
+        if (RiskEngine(riskEngine).getValueInEth(pool.asset, newBorrowAssets) < minDebt) {
             revert Pool_DebtTooLow(poolId, pool.asset, newBorrowAssets);
         }
 
         // update total pool debt, denominated in notional asset units and shares
         pool.totalBorrowAssets += amt;
         pool.totalBorrowShares += borrowShares;
-
-        // update position debt, denominated in borrow shares
         borrowSharesOf[poolId][position] += borrowShares;
+
+        // total borrow shares and total borrow assets checks
+        if (pool.totalBorrowAssets > pool.borrowCap) revert Pool_BorrowCapExceeded(poolId);
+        if (pool.totalBorrowShares > MAX_BORROW_SHARES) revert Pool_MaxBorrowShares(poolId);
 
         // compute origination fee amt
         // [ROUND] origination fee is rounded down, in favor of the borrower
@@ -479,7 +559,15 @@ contract Pool is OwnableUpgradeable, ERC6909 {
     /// @param position the position for which debt is being repaid
     /// @param amt the notional amount of debt asset repaid
     /// @return remainingShares remaining debt in borrow shares owed by the position
-    function repay(uint256 poolId, address position, uint256 amt) external returns (uint256 remainingShares) {
+    function repay(
+        uint256 poolId,
+        address position,
+        uint256 amt
+    )
+        external
+        whenNotPaused
+        returns (uint256 remainingShares)
+    {
         PoolData storage pool = poolDataFor[poolId];
 
         // the only way to call repay() is through the position manager
@@ -508,7 +596,7 @@ contract Pool is OwnableUpgradeable, ERC6909 {
             uint256 newBorrowAssets = _convertToAssets(
                 remainingShares, pool.totalBorrowAssets - amt, pool.totalBorrowShares - borrowShares, Math.Rounding.Down
             );
-            if (_getValueOf(pool.asset, newBorrowAssets) < minDebt) {
+            if (RiskEngine(riskEngine).getValueInEth(pool.asset, newBorrowAssets) < minDebt) {
                 revert Pool_DebtTooLow(poolId, pool.asset, newBorrowAssets);
             }
         }
@@ -525,7 +613,7 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         return remainingShares;
     }
 
-    function rebalanceBadDebt(uint256 poolId, address position) external {
+    function rebalanceBadDebt(uint256 poolId, address position) external whenNotPaused {
         PoolData storage pool = poolDataFor[poolId];
         accrue(pool, poolId);
 
@@ -548,26 +636,27 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         borrowSharesOf[poolId][position] = 0;
     }
 
-    function _getValueOf(address asset, uint256 amt) internal view returns (uint256) {
-        address oracle = RiskEngine(riskEngine).getOracleFor(asset);
-        return IOracle(oracle).getValueInEth(asset, amt);
-    }
-
     /// @notice Initialize a new pool
     /// @param owner Pool owner
     /// @param asset Pool debt asset
-    /// @param poolCap Pool asset cap
+    /// @param depositCap Pool asset cap
+    /// @param borrowCap Pool debt ceiling
     /// @param rateModelKey Registry key for interest rate model
     /// @return poolId Pool id for initialized pool
     function initializePool(
         address owner,
         address asset,
-        uint128 poolCap,
-        bytes32 rateModelKey
-    ) external returns (uint256 poolId) {
+        bytes32 rateModelKey,
+        uint256 depositCap,
+        uint256 borrowCap,
+        uint256 initialDepositAmt
+    )
+        external
+        whenNotPaused
+        returns (uint256 poolId)
+    {
         if (owner == address(0)) revert Pool_ZeroAddressOwner();
-
-        if (RiskEngine(riskEngine).getOracleFor(asset) == address(0)) revert Pool_OracleNotFound(asset);
+        if (RiskEngine(riskEngine).oracleFor(asset) == address(0)) revert Pool_OracleNotFound(asset);
 
         address rateModel = Registry(registry).rateModelFor(rateModelKey);
         if (rateModel == address(0)) revert Pool_RateModelNotFound(rateModelKey);
@@ -580,8 +669,9 @@ contract Pool is OwnableUpgradeable, ERC6909 {
             isPaused: false,
             asset: asset,
             rateModel: rateModel,
-            poolCap: poolCap,
-            lastUpdated: uint128(block.timestamp),
+            borrowCap: borrowCap,
+            depositCap: depositCap,
+            lastUpdated: block.timestamp,
             interestFee: defaultInterestFee,
             originationFee: defaultOriginationFee,
             totalBorrowAssets: 0,
@@ -589,12 +679,16 @@ contract Pool is OwnableUpgradeable, ERC6909 {
             totalDepositAssets: 0,
             totalDepositShares: 0
         });
-
         poolDataFor[poolId] = poolData;
+
+        // burn initial deposit, assume msg.sender has approved
+        uint256 shares = deposit(poolId, initialDepositAmt, DEAD_ADDRESS);
+        if (shares < MIN_BURNED_SHARES) revert Pool_MinBurnedShares(shares);
 
         emit PoolInitialized(poolId, owner, asset);
         emit RateModelUpdated(poolId, rateModel);
-        emit PoolCapSet(poolId, poolCap);
+        emit PoolCapSet(poolId, depositCap);
+        emit BorrowCapSet(poolId, borrowCap);
     }
 
     /// @notice Toggle paused state for a pool to restrict deposit and borrows
@@ -605,11 +699,24 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         emit PoolPauseToggled(poolId, pool.isPaused);
     }
 
+    /// @notice Pause all pools and functions
+    function togglePauseAll() external onlyOwner {
+        if (PausableUpgradeable.paused()) PausableUpgradeable._unpause();
+        else PausableUpgradeable._pause();
+    }
+
     /// @notice Update pool asset cap to restrict total amount of assets deposited
-    function setPoolCap(uint256 poolId, uint128 poolCap) external {
+    function setPoolCap(uint256 poolId, uint256 depositCap) external {
         if (msg.sender != ownerOf[poolId]) revert Pool_OnlyPoolOwner(poolId, msg.sender);
-        poolDataFor[poolId].poolCap = poolCap;
-        emit PoolCapSet(poolId, poolCap);
+        poolDataFor[poolId].depositCap = depositCap;
+        emit PoolCapSet(poolId, depositCap);
+    }
+
+    /// @notice Update pool borrow cap to restrict total amount of assets borrowed
+    function setBorrowCap(uint256 poolId, uint256 borrowCap) external {
+        if (msg.sender != ownerOf[poolId]) revert Pool_OnlyPoolOwner(poolId, msg.sender);
+        poolDataFor[poolId].borrowCap = borrowCap;
+        emit BorrowCapSet(poolId, borrowCap);
     }
 
     /// @notice Update base pool owner
@@ -683,10 +790,10 @@ contract Pool is OwnableUpgradeable, ERC6909 {
     /// @notice Set interest fee for given pool
     /// @param poolId Pool id
     /// @param interestFee New interest fee
-    function setInterestFee(uint256 poolId, uint128 interestFee) external onlyOwner {
+    function setInterestFee(uint256 poolId, uint256 interestFee) external onlyOwner {
+        if (interestFee > 1e18) revert Pool_FeeTooHigh();
         PoolData storage pool = poolDataFor[poolId];
         accrue(pool, poolId);
-        if (interestFee > 1e18) revert Pool_FeeTooHigh();
         pool.interestFee = interestFee;
         emit InterestFeeSet(poolId, interestFee);
     }
@@ -694,7 +801,7 @@ contract Pool is OwnableUpgradeable, ERC6909 {
     /// @notice Set origination fee for given pool
     /// @param poolId Pool id
     /// @param originationFee New origination fee
-    function setOriginationFee(uint256 poolId, uint128 originationFee) external onlyOwner {
+    function setOriginationFee(uint256 poolId, uint256 originationFee) external onlyOwner {
         if (originationFee > 1e18) revert Pool_FeeTooHigh();
         poolDataFor[poolId].originationFee = originationFee;
         emit OriginationFeeSet(poolId, originationFee);
@@ -712,12 +819,20 @@ contract Pool is OwnableUpgradeable, ERC6909 {
         emit MinDebtSet(newMinDebt);
     }
 
-    function setDefaultOriginationFee(uint128 newDefaultOriginationFee) external onlyOwner {
+    function setFeeRecipient(address newFeeRecipient) external onlyOwner {
+        if (newFeeRecipient == address(0)) revert Pool_ZeroFeeRecipient();
+        feeRecipient = newFeeRecipient;
+        emit FeeRecipientSet(newFeeRecipient);
+    }
+
+    function setDefaultOriginationFee(uint256 newDefaultOriginationFee) external onlyOwner {
+        if (newDefaultOriginationFee > 1e18) revert Pool_FeeTooHigh();
         defaultOriginationFee = newDefaultOriginationFee;
         emit DefaultOriginationFeeSet(newDefaultOriginationFee);
     }
 
-    function setDefaultInterestFee(uint128 newDefaultInterestFee) external onlyOwner {
+    function setDefaultInterestFee(uint256 newDefaultInterestFee) external onlyOwner {
+        if (newDefaultInterestFee > 1e18) revert Pool_FeeTooHigh();
         defaultInterestFee = newDefaultInterestFee;
         emit DefaultInterestFeeSet(newDefaultInterestFee);
     }

@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/*//////////////////////////////////////////////////////////////
-                            Position
-//////////////////////////////////////////////////////////////*/
-
 import { Pool } from "./Pool.sol";
+import { RiskEngine } from "./RiskEngine.sol";
 import { IterableSet } from "./lib/IterableSet.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -18,7 +15,6 @@ contract Position {
 
     /// @notice Position implementation version
     uint256 public constant VERSION = 1;
-
     /// @notice Maximum number of assets that a position can hold at once
     uint256 public constant MAX_ASSETS = 5;
     /// @notice Maximum number of pools that a position can borrow from at once
@@ -26,6 +22,8 @@ contract Position {
 
     /// @notice Sentiment Pool
     Pool public immutable POOL;
+    /// @notice Sentiment Risk Engine
+    RiskEngine public immutable RISK_ENGINE;
     /// @notice Sentiment Position Manager
     address public immutable POSITION_MANAGER;
 
@@ -42,12 +40,15 @@ contract Position {
     error Position_ExecFailed(address position, address target);
     /// @notice Function access restricted to Sentiment Position Manager
     error Position_OnlyPositionManager(address position, address sender);
+    /// @notice Invalid base pool pair borrow
+    error Position_InvalidPoolPair(uint256 poolA, uint256 poolB);
 
     /// @param pool Sentiment Singleton Pool
     /// @param positionManager Sentiment Postion Manager
-    constructor(address pool, address positionManager) {
+    constructor(address pool, address positionManager, address riskEngine) {
         POOL = Pool(pool);
         POSITION_MANAGER = positionManager;
+        RISK_ENGINE = RiskEngine(riskEngine);
     }
 
     // positions can receive and hold ether to perform external operations.
@@ -120,6 +121,16 @@ contract Position {
     /// @dev Position assumes that this is done after debt assets have been transferred and
     ///      Pool.borrow() has already been called
     function borrow(uint256 poolId, uint256) external onlyPositionManager {
+        // check if existing debt pools allow co-borrowing with given pool
+        uint256[] memory pools = debtPools.getElements();
+        uint256 debtPoolsLen = debtPools.length();
+        for (uint256 i; i < debtPoolsLen; ++i) {
+            if (poolId == pools[i]) continue;
+            if (RISK_ENGINE.isAllowedPair(poolId, pools[i]) && RISK_ENGINE.isAllowedPair(pools[i], poolId)) continue;
+            revert Position_InvalidPoolPair(poolId, pools[i]);
+        }
+
+        // update debt pools set
         debtPools.insert(poolId);
         if (debtPools.length() > MAX_DEBT_POOLS) revert Position_MaxDebtPoolsExceeded(address(this));
     }
