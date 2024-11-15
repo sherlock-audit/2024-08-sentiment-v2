@@ -64,7 +64,7 @@ contract PortfolioLensTest is BaseTest {
         actions[6] = addToken(address(asset3));
         positionManager.processBatch(position, actions);
         vm.stopPrank();
-        assertTrue(riskEngine.isPositionHealthy(position));
+        assertGe(riskEngine.getPositionHealthFactor(position), 1e18);
         vm.stopPrank();
 
         positions.push(position);

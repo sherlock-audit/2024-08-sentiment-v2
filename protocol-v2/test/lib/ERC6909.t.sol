@@ -199,7 +199,9 @@ contract ERC6909Test is Test {
         uint256 id,
         uint256 mintAmount,
         uint256 transferAmount
-    ) public {
+    )
+        public
+    {
         transferAmount = bound(transferAmount, 0, mintAmount);
 
         token.mint(sender, id, mintAmount);
@@ -248,7 +250,9 @@ contract ERC6909Test is Test {
         uint256 id,
         uint256 mintAmount,
         uint256 transferAmount
-    ) public {
+    )
+        public
+    {
         transferAmount = bound(transferAmount, 0, mintAmount);
 
         token.mint(sender, id, mintAmount);
@@ -274,7 +278,9 @@ contract ERC6909Test is Test {
         uint256 id,
         uint256 mintAmount,
         uint256 transferAmount
-    ) public {
+    )
+        public
+    {
         transferAmount = bound(transferAmount, 0, mintAmount);
 
         token.mint(sender, id, mintAmount);
@@ -319,7 +325,9 @@ contract ERC6909Test is Test {
         address receiver,
         uint256 id,
         uint256 amount
-    ) public {
+    )
+        public
+    {
         amount = bound(amount, 1, type(uint256).max);
 
         vm.prank(sender);
@@ -331,7 +339,9 @@ contract ERC6909Test is Test {
         address receiver,
         uint256 id,
         uint256 amount
-    ) public {
+    )
+        public
+    {
         amount = bound(amount, 1, type(uint256).max);
         uint256 overflowAmount = type(uint256).max - amount + 1;
 

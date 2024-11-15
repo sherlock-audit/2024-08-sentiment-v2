@@ -7,7 +7,7 @@ import { SuperPoolLens } from "src/lens/SuperPoolLens.sol";
 import { FixedPriceOracle } from "src/oracle/FixedPriceOracle.sol";
 
 contract SuperPoolLensTests is BaseTest {
-    uint256 initialDepositAmt = 1e5;
+    uint256 initialDepositAmt = 1e7;
 
     Pool pool;
     RiskEngine riskEngine;
@@ -135,7 +135,7 @@ contract SuperPoolLensTests is BaseTest {
         assertEq(userDepositData.superPool, address(superPool1));
         assertEq(userDepositData.amount, uint256(50e18));
         assertEq(userDepositData.valueInEth, uint256(50e18));
-        assertEq(userDepositData.interestRate, 999_999_999_999_999_000);
+        assertEq(userDepositData.interestRate, 999_999_999_999_900_000);
     }
 
     function testUserDepositData() public view {
@@ -144,26 +144,26 @@ contract SuperPoolLensTests is BaseTest {
 
         assertEq(userMultiDepositData.owner, user);
         assertEq(userMultiDepositData.totalValueInEth, uint256(100e18));
-        assertEq(userMultiDepositData.interestRate, 999_999_999_999_998_500);
+        assertEq(userMultiDepositData.interestRate, 999_999_999_999_850_000);
 
         assertEq(userMultiDepositData.deposits[0].owner, user);
         assertEq(userMultiDepositData.deposits[0].asset, address(asset1));
         assertEq(userMultiDepositData.deposits[0].superPool, address(superPool1));
         assertEq(userMultiDepositData.deposits[0].amount, uint256(50e18));
         assertEq(userMultiDepositData.deposits[0].valueInEth, uint256(50e18));
-        assertEq(userMultiDepositData.deposits[0].interestRate, 999_999_999_999_999_000);
+        assertEq(userMultiDepositData.deposits[0].interestRate, 999_999_999_999_900_000);
 
         assertEq(userMultiDepositData.deposits[1].owner, user);
         assertEq(userMultiDepositData.deposits[1].asset, address(asset2));
         assertEq(userMultiDepositData.deposits[1].superPool, address(superPool2));
         assertEq(userMultiDepositData.deposits[0].amount, uint256(50e18));
         assertEq(userMultiDepositData.deposits[0].valueInEth, uint256(50e18));
-        assertEq(userMultiDepositData.deposits[0].interestRate, 999_999_999_999_999_000);
+        assertEq(userMultiDepositData.deposits[0].interestRate, 999_999_999_999_900_000);
     }
 
     function testSuperPoolInterestRate() public view {
-        assertEq(superPoolLens.getSuperPoolInterestRate(address(superPool1)), 999_999_999_999_999_000);
-        assertEq(superPoolLens.getSuperPoolInterestRate(address(superPool2)), 999_999_999_999_998_000);
+        assertEq(superPoolLens.getSuperPoolInterestRate(address(superPool1)), 999_999_999_999_900_000);
+        assertEq(superPoolLens.getSuperPoolInterestRate(address(superPool2)), 999_999_999_999_800_000);
     }
 
     function testEmptySuperPoolInterestRate() public {

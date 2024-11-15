@@ -6,10 +6,14 @@ import "../BaseTest.t.sol";
 import { FixedRateModel } from "../../src/irm/FixedRateModel.sol";
 import { LinearRateModel } from "../../src/irm/LinearRateModel.sol";
 import { MockERC20 } from "../mocks/MockERC20.sol";
+
+import { StdStorage, stdStorage } from "forge-std/Test.sol";
 import { Action, Operation } from "src/PositionManager.sol";
 import { FixedPriceOracle } from "src/oracle/FixedPriceOracle.sol";
 
 contract PositionUnitTests is BaseTest {
+    using stdStorage for StdStorage;
+
     Pool pool;
     address payable position;
     RiskEngine riskEngine;
@@ -58,9 +62,10 @@ contract PositionUnitTests is BaseTest {
         address pool2 = makeAddr("pool2");
         address positionManager2 = makeAddr("positionManager2");
 
-        Position newPosition = new Position(pool2, positionManager2);
+        Position newPosition = new Position(pool2, positionManager2, address(riskEngine));
 
         assertEq(address(newPosition.POOL()), pool2);
+        assertEq(address(newPosition.RISK_ENGINE()), address(riskEngine));
         assertEq(address(newPosition.POSITION_MANAGER()), positionManager2);
     }
 
@@ -93,6 +98,25 @@ contract PositionUnitTests is BaseTest {
         Position(position).exec(address(0x0), 0, bytes(""));
     }
 
+    function testBorrowInvalidPair(uint256 poolA, uint256 poolB) public {
+        vm.assume(poolA > 0);
+        vm.assume(poolB > 0);
+        vm.assume(poolA != poolB);
+
+        vm.startPrank(address(positionManager));
+        Position(position).borrow(poolA, 10_000 ether);
+
+        vm.expectRevert();
+        Position(position).borrow(poolB, 10_000 ether);
+
+        stdstore.target(address(riskEngine)).sig("isAllowedPair(uint256,uint256)").with_key(poolA).with_key(poolB)
+            .checked_write(true);
+        stdstore.target(address(riskEngine)).sig("isAllowedPair(uint256,uint256)").with_key(poolB).with_key(poolA)
+            .checked_write(true);
+
+        Position(position).borrow(poolB, 10_000 ether);
+    }
+
     function testCannotExceedPoolMaxLength() public {
         vm.startPrank(address(positionManager));
 
@@ -102,6 +126,14 @@ contract PositionUnitTests is BaseTest {
 
         vm.expectRevert();
         Position(position).addToken(address(vm.addr(6)));
+
+        for (uint256 i = 1; i <= 7; i++) {
+            for (uint256 j = 1; j <= 7; j++) {
+                if (i == j) continue;
+                stdstore.target(address(riskEngine)).sig("isAllowedPair(uint256,uint256)").with_key(i).with_key(j)
+                    .checked_write(true);
+            }
+        }
 
         for (uint256 i = 1; i < 6; i++) {
             Position(position).borrow(i, 10_000 ether);
