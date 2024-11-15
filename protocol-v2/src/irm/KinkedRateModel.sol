@@ -28,7 +28,7 @@ contract KinkedRateModel is IRateModel {
     uint256 private immutable MAX_EXCESS_UTIL; // 1e18 - OPTIMAL_UTIL
 
     constructor(uint256 minRate, uint256 slope1, uint256 slope2, uint256 optimalUtil) {
-        assert(optimalUtil < 1e18); // optimal utilisation < 100%
+        assert(optimalUtil > 0 && optimalUtil < 1e18); // optimal utilisation < 100% and > 0
 
         MIN_RATE_1 = minRate;
         SLOPE_1 = slope1;
@@ -43,7 +43,11 @@ contract KinkedRateModel is IRateModel {
         uint256 lastUpdated,
         uint256 totalBorrows,
         uint256 totalAssets
-    ) external view returns (uint256) {
+    )
+        external
+        view
+        returns (uint256)
+    {
         uint256 rateFactor = ((block.timestamp - lastUpdated)).mulDiv(
             getInterestRate(totalBorrows, totalAssets), SECONDS_PER_YEAR, Math.Rounding.Up
         ); // rateFactor = time delta * apr / secs_per_year
@@ -55,7 +59,7 @@ contract KinkedRateModel is IRateModel {
     function getInterestRate(uint256 totalBorrows, uint256 totalAssets) public view returns (uint256) {
         uint256 util = (totalAssets == 0) ? 0 : totalBorrows.mulDiv(1e18, totalAssets, Math.Rounding.Up);
 
-        if (util <= OPTIMAL_UTIL) return MIN_RATE_1 + SLOPE_1.mulDiv(util, OPTIMAL_UTIL, Math.Rounding.Down);
-        else return MIN_RATE_2 + SLOPE_2.mulDiv((util - OPTIMAL_UTIL), MAX_EXCESS_UTIL, Math.Rounding.Down);
+        if (util <= OPTIMAL_UTIL) return MIN_RATE_1 + SLOPE_1.mulDiv(util, OPTIMAL_UTIL, Math.Rounding.Up);
+        else return MIN_RATE_2 + SLOPE_2.mulDiv((util - OPTIMAL_UTIL), MAX_EXCESS_UTIL, Math.Rounding.Up);
     }
 }

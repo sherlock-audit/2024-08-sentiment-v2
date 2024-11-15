@@ -97,7 +97,7 @@ contract FailedRepayAll is BaseTest {
     function testTimeIncreasesDebt(uint96 assets) public {
         testBorrowWorksAsIntended(assets);
 
-        (,,,,,,, uint256 totalBorrowAssets, uint256 totalBorrowShares,,) = pool.poolDataFor(linearRatePool);
+        (,,,,,,,, uint256 totalBorrowAssets, uint256 totalBorrowShares,,) = pool.poolDataFor(linearRatePool);
 
         uint256 time = block.timestamp + 1 days;
         vm.warp(time + 86_400 * 365);
@@ -105,7 +105,7 @@ contract FailedRepayAll is BaseTest {
 
         pool.accrue(linearRatePool);
 
-        (,,,,,,, uint256 newTotalBorrowAssets, uint256 newTotalBorrowShares,,) = pool.poolDataFor(linearRatePool);
+        (,,,,,,,, uint256 newTotalBorrowAssets, uint256 newTotalBorrowShares,,) = pool.poolDataFor(linearRatePool);
 
         assertEq(newTotalBorrowShares, totalBorrowShares);
         assertGt(newTotalBorrowAssets, totalBorrowAssets);
@@ -114,7 +114,7 @@ contract FailedRepayAll is BaseTest {
     function test_poc_RepayFail() public {
         // Underlying pool has some actions that changes share:asset ratio
         testTimeIncreasesDebt(10e18);
-        (,,,,,,, uint256 totalBorrowAssets, uint256 totalBorrowShares,,) = pool.poolDataFor(linearRatePool);
+        (,,,,,,,, uint256 totalBorrowAssets, uint256 totalBorrowShares,,) = pool.poolDataFor(linearRatePool);
         assertGt(totalBorrowAssets, totalBorrowShares);
 
         // Mint some tokens to position owner

@@ -84,32 +84,31 @@ contract Deploy is BaseScript {
         // risk
         riskEngine = new RiskEngine(address(registry), params.minLtv, params.maxLtv);
         riskEngine.transferOwnership(params.owner);
-        riskModule = new RiskModule(address(registry), params.liquidationDiscount);
+        riskModule = new RiskModule(address(registry), params.liquidationDiscount, params.liquidationFee);
         // pool
         poolImpl = address(new Pool());
         bytes memory poolInitData = abi.encodeWithSelector(
             Pool.initialize.selector,
             params.owner,
-            params.defaultInterestFee,
-            params.defaultOriginationFee,
             address(registry),
             params.feeRecipient,
+            params.minDebt,
             params.minBorrow,
-            params.minDebt
+            params.defaultInterestFee,
+            params.defaultOriginationFee
         );
         pool = Pool(address(new TransparentUpgradeableProxy(poolImpl, params.proxyAdmin, poolInitData)));
         // super pool factory
         superPoolFactory = new SuperPoolFactory(address(pool));
         // position manager
         positionManagerImpl = address(new PositionManager());
-        bytes memory posmgrInitData = abi.encodeWithSelector(
-            PositionManager.initialize.selector, params.owner, address(registry), params.liquidationFee
-        );
+        bytes memory posmgrInitData =
+            abi.encodeWithSelector(PositionManager.initialize.selector, params.owner, address(registry));
         positionManager = PositionManager(
             address(new TransparentUpgradeableProxy(positionManagerImpl, params.proxyAdmin, posmgrInitData))
         );
         // position
-        address positionImpl = address(new Position(address(pool), address(positionManager)));
+        address positionImpl = address(new Position(address(pool), address(positionManager), address(riskEngine)));
         positionBeacon = address(new UpgradeableBeacon(positionImpl));
         // lens
         superPoolLens = new SuperPoolLens(address(pool), address(riskEngine));

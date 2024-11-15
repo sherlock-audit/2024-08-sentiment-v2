@@ -17,7 +17,7 @@ contract SuperPoolFactory {
 
     address private constant DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
     /// @notice Minimum amount of initial shares to be burned
-    uint256 public constant MIN_BURNED_SHARES = 1000;
+    uint256 public constant MIN_BURNED_SHARES = 1_000_000;
 
     /// @notice All Pools exist on the Singleton Pool Contract, which is fixed per factory
     address public immutable POOL;
@@ -62,7 +62,10 @@ contract SuperPoolFactory {
         uint256 initialDepositAmt,
         string calldata name,
         string calldata symbol
-    ) external returns (address) {
+    )
+        external
+        returns (address)
+    {
         if (fee != 0 && feeRecipient == address(0)) revert SuperPoolFactory_ZeroFeeRecipient();
         SuperPool superPool = new SuperPool(POOL, asset, feeRecipient, fee, superPoolCap, name, symbol);
         superPool.transferOwnership(owner);
@@ -70,10 +73,10 @@ contract SuperPoolFactory {
 
         // burn initial deposit
         IERC20(asset).safeTransferFrom(msg.sender, address(this), initialDepositAmt); // assume approval
-        IERC20(asset).approve(address(superPool), initialDepositAmt);
+        IERC20(asset).forceApprove(address(superPool), initialDepositAmt);
         uint256 shares = superPool.deposit(initialDepositAmt, address(this));
         if (shares < MIN_BURNED_SHARES) revert SuperPoolFactory_TooFewInitialShares(shares);
-        IERC20(superPool).transfer(DEAD_ADDRESS, shares);
+        IERC20(superPool).safeTransfer(DEAD_ADDRESS, shares);
 
         emit SuperPoolDeployed(owner, address(superPool), asset, name, symbol);
         return address(superPool);

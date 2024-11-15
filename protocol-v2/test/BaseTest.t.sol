@@ -103,17 +103,27 @@ contract BaseTest is Test {
         Registry(protocol.registry()).setRateModel(LINEAR_RATE_MODEL2_KEY, linearRateModel2);
         vm.stopPrank();
 
+        asset1.mint(poolOwner, 4e7);
+        asset2.mint(poolOwner, 1e7);
+
         vm.startPrank(poolOwner);
-        fixedRatePool =
-            protocol.pool().initializePool(poolOwner, address(asset1), type(uint128).max, FIXED_RATE_MODEL_KEY);
-        linearRatePool =
-            protocol.pool().initializePool(poolOwner, address(asset1), type(uint128).max, LINEAR_RATE_MODEL_KEY);
-        fixedRatePool2 =
-            protocol.pool().initializePool(poolOwner, address(asset1), type(uint128).max, FIXED_RATE_MODEL2_KEY);
-        linearRatePool2 =
-            protocol.pool().initializePool(poolOwner, address(asset1), type(uint128).max, LINEAR_RATE_MODEL2_KEY);
-        alternateAssetPool =
-            protocol.pool().initializePool(poolOwner, address(asset2), type(uint128).max, FIXED_RATE_MODEL_KEY);
+        asset1.approve(address(protocol.pool()), type(uint256).max);
+        asset2.approve(address(protocol.pool()), type(uint256).max);
+        fixedRatePool = protocol.pool().initializePool(
+            poolOwner, address(asset1), FIXED_RATE_MODEL_KEY, type(uint256).max, type(uint256).max, 1e7
+        );
+        linearRatePool = protocol.pool().initializePool(
+            poolOwner, address(asset1), LINEAR_RATE_MODEL_KEY, type(uint256).max, type(uint256).max, 1e7
+        );
+        fixedRatePool2 = protocol.pool().initializePool(
+            poolOwner, address(asset1), FIXED_RATE_MODEL2_KEY, type(uint256).max, type(uint256).max, 1e7
+        );
+        linearRatePool2 = protocol.pool().initializePool(
+            poolOwner, address(asset1), LINEAR_RATE_MODEL2_KEY, type(uint256).max, type(uint256).max, 1e7
+        );
+        alternateAssetPool = protocol.pool().initializePool(
+            poolOwner, address(asset2), FIXED_RATE_MODEL_KEY, type(uint256).max, type(uint256).max, 1e7
+        );
         vm.stopPrank();
     }
 
